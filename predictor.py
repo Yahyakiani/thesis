@@ -2,75 +2,69 @@ import whisper
 import pickle
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.svm import SVR
+from sklearn.metrics import mean_squared_error
 from pydub import AudioSegment
 from preprocessor import WordPreprocessor
+import Levenshtein as lev
+import re
+import textstat
 
-MODEL_FILENAME = "model.pickle"
+# Constants for file paths and settings
+MODEL_FILENAME_TEMPLATE = "model_{}.pickle"
 TRAINING_CSV_FILENAME = "data/training_data.csv"
-TREE_MAX_DEPTH = 4
-
 
 class WordComplexityPredictor:
     def __init__(self, debug=False):
         self._preprocessor = WordPreprocessor()
         self._debug = debug
-        self.common_words = set(["a", "the", "of"])
+        self.transcription = None
+        self.models = {
+            "decision_tree": DecisionTreeRegressor(max_depth=4),
+            "linear_regression": LinearRegression(),
+            "random_forest": RandomForestRegressor(n_estimators=100),
+            "gradient_boosting": GradientBoostingRegressor(n_estimators=100),
+            "svr": SVR(),
+        }
+        self.model_scores = {}
+        self._train_and_save_models(TRAINING_CSV_FILENAME)
 
-        if not self._load_model():
-            # File not found, just create a new model and train it.
-            self._model = DecisionTreeRegressor(max_depth=TREE_MAX_DEPTH)
-            self._train_and_save(TRAINING_CSV_FILENAME)
-
-        self._log("Constructed analyzer.")
-
-    def _load_model(self):
-        """
-        Loads a scikit-learn machine learning model from a Pickle file. Returns
-        True if the model was successfully loaded.
-        """
-        try:
-            f = open(MODEL_FILENAME, "rb")
-            self._model = pickle.load(f)
-            self._log("Loaded model from file.")
-            return True
-        except FileNotFoundError as e:
-            return False
-
-    def _train_and_save(self, train_csv):
-        """
-        Trains a scikit-learn machine learning model using the data provided in
-        the filename given (train_csv) and preprocessing implemented in
-        WordPreprocessor. After training, it saves the trained model to
-        MODEL_FILENAME.
-
-        train_csv is a CSV file with a header row. The column names are "word",
-        "sentence" (that the word appears in), "index" (of the word in the
-        sentence), and "label" (0 to 1, inclusive, that measures how complex
-        that word is seen to be).
-        """
+    def _train_and_save_models(self, train_csv):
         training_data = pd.read_csv(train_csv)
-        X = np.ma.row_stack(
+        X = np.vstack(
             [
                 self._preprocessor.get_feature_vector(row["word"])
                 for _, row in training_data.iterrows()
             ]
         )
-        y = np.array([row["label"] for _, row in training_data.iterrows()])
-        self._model.fit(X, y)
+        y = np.array(training_data["label"])
 
-        f = open(MODEL_FILENAME, "wb")
-        pickle.dump(self._model, f)
-        self._log("Trained and saved model to file.")
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
 
-    def predict(self, word):
-        """
-        Uses self.model to predict, on a scale of 0 to 1 inclusive, how complex
-        is word is seen to be.
-        """
+        for name, model in self.models.items():
+            model.fit(X_train, y_train)
+            predictions = model.predict(X_test)
+            mse = mean_squared_error(y_test, predictions)
+            self.model_scores[name] = np.sqrt(mse)
+            with open(MODEL_FILENAME_TEMPLATE.format(name), "wb") as f:
+                pickle.dump(model, f)
+            self._log(
+                f"Trained and saved {name} model with RMSE: {self.model_scores[name]}"
+            )
+
+    def predict(self, word, model_name="decision_tree"):
+        if model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found.")
+        model = self.models[model_name]
         features = self._preprocessor.get_feature_vector(word)
-        pred = self._model.predict(features)[0]
-        self._log('Predicted "{}" with complexity {}.'.format(word, pred))
+        pred = model.predict(features)[0]
+        self._log(f'Predicted "{word}" with complexity {pred} using {model_name}.')
         return float(pred)
 
     def _log(self, message):
@@ -88,10 +82,13 @@ class WordComplexityPredictor:
         model = whisper.load_model("base")
         result = model.transcribe(audio_file_path)
         self._log(f"Transcribed audio to text: {result['text']}")
+        self.transcription = result["text"]
         return result["text"]
 
     # New Method: Process Audio File and Predict Word Complexities
-    def process_audio_and_predict(self, mp3_file_path):
+    def process_audio_and_predict(self, mp3_file_path, model_name="decision_tree"):
+        if model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found.")
         wav_file_path = mp3_file_path.replace(".mp3", ".wav")
         self.convert_mp3_to_wav(mp3_file_path, wav_file_path)
         transcription = self.transcribe_audio(wav_file_path)
@@ -99,9 +96,71 @@ class WordComplexityPredictor:
 
         complexities = {}
         for word in words:
-            if word.lower() not in self.common_words:
-                complexity = self.predict(word)
-                if complexity is not None:
-                    complexities[word] = complexity
+            complexity = self.predict(word, model_name=model_name)
+            if complexity is not None:
+                complexities[word.lower()] = complexity
 
         return complexities
+
+    def process_text_and_predict(self, text, model_name="decision_tree"):
+        if model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found.")
+        words = text.split()
+        complexities = {}
+        for word in words:
+            complexity = self.predict(word, model_name=model_name)
+            if complexity is not None:
+                complexities[word.lower()] = complexity
+
+        return complexities
+
+    def align_texts(self, original, transcribed):
+        ops = lev.opcodes(original, transcribed)
+        difficulties = []
+
+        for op, orig_start, orig_end, trans_start, trans_end in ops:
+            if op in ["replace", "delete", "insert"]:
+                word_section = (
+                    original[orig_start:orig_end]
+                    if op != "insert"
+                    else transcribed[trans_start:trans_end]
+                )
+                for word in word_section:
+                    difficulties.append((word, op))
+
+        return difficulties
+
+    def normalize_text(self, text):
+        """
+        Normalize the input text by removing punctuation and converting to lowercase.
+
+        Args:
+        - text (str): The input text to be normalized.
+
+        Returns:
+        - str: The normalized text.
+        """
+        # Remove dots and commas, and convert to lowercase.
+        # Extend this pattern to remove other punctuation as needed.
+        text = re.sub(r"[.,]", "", text).lower()
+        return text
+
+    def calculate_readability_metrics(self, text):
+        """
+        Calculate various readability metrics for the given text.
+
+        Args:
+        - text (str): The input text for which to calculate readability metrics.
+
+        Returns:
+        - dict: A dictionary containing the calculated readability scores.
+        """
+        metrics = {
+            "Automated Readability Index": textstat.automated_readability_index(text),
+            "Coleman–Liau Index": textstat.coleman_liau_index(text),
+            "Flesch-Kincaid Grade Level": textstat.flesch_kincaid_grade(text),
+            "Flesch Reading Ease": textstat.flesch_reading_ease(text),
+            "Gunning Fog Index": textstat.gunning_fog(text),
+            "SMOG Grade": textstat.smog_index(text),
+        }
+        return metrics
