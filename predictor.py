@@ -13,6 +13,8 @@ from preprocessor import WordPreprocessor
 import Levenshtein as lev
 import re
 import textstat
+import base64
+import os
 
 # Constants for file paths and settings
 MODEL_FILENAME_TEMPLATE = "model_{}.pickle"
@@ -77,10 +79,59 @@ class WordComplexityPredictor:
         audio.export(wav_file_path, format="wav")
         self._log(f"Converted {mp3_file_path} to {wav_file_path}.")
 
+    def process_base64_audio(self, base64_audio, temp_filename="temp_audio.wav"):
+        # Decode the base64 string
+        audio_data = base64.b64decode(base64_audio)
+
+        # Write the MP4 audio to a temporary file
+        with open(temp_filename, "wb") as f:
+            f.write(audio_data)
+
+        # Convert MP4 to WAV using pydub (requires ffmpeg)
+        audio = AudioSegment.from_file(temp_filename)
+        audio.export(temp_filename, format="wav")
+
+        # Process the WAV file with Whisper
+        model = whisper.load_model("base")
+        result = model.transcribe(temp_filename)
+        print(f"Transcribed audio to text: {result['text']}")
+
+        # Cleanup: Remove the temporary files
+        os.remove(temp_filename)
+
+        return result["text"]
+
     # New Method: Transcribe Audio to Text
     def transcribe_audio(self, audio_file_path):
         model = whisper.load_model("base")
         result = model.transcribe(audio_file_path)
+        self._log(f"Transcribed audio to text: {result['text']}")
+        self.transcription = result["text"]
+        return result["text"]
+
+    def transcribe_audio_stream(self, audio_stream):
+        # Load the Whisper model
+        model = whisper.load_model("base")
+
+        # Read the audio stream into a byte array
+        audio_bytes = audio_stream.read()
+
+        # Convert the byte array to a NumPy array.
+        # The audio file needs to be in a format Whisper understands (e.g., WAV).
+        # If it's not in a compatible format, you might need additional steps to convert it.
+        # For this example, assuming the audio is already in a compatible format (PCM 16-bit):
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16)
+
+        # Whisper expects the audio to be in float32 format, normalized between -1 and 1.
+        # This conversion step is necessary if the audio was in int16 format.
+        audio_np = audio_np.astype(np.float32) / 32768.0
+
+        # Reshape the audio array to (-1, 1) if it's mono or (-1, 2) for stereo, as needed by Whisper.
+        # Assuming mono audio for this example:
+        audio_np = audio_np.reshape(-1, 1)
+
+        # Transcribe the audio
+        result = model.transcribe(audio_np)
         self._log(f"Transcribed audio to text: {result['text']}")
         self.transcription = result["text"]
         return result["text"]
@@ -92,6 +143,22 @@ class WordComplexityPredictor:
         wav_file_path = mp3_file_path.replace(".mp3", ".wav")
         self.convert_mp3_to_wav(mp3_file_path, wav_file_path)
         transcription = self.transcribe_audio(wav_file_path)
+        words = transcription.split()
+
+        complexities = {}
+        for word in words:
+            complexity = self.predict(word, model_name=model_name)
+            if complexity is not None:
+                complexities[word.lower()] = complexity
+
+        return complexities
+
+    def process_audio_stream_and_predict(
+        self, audio_stream, model_name="decision_tree"
+    ):
+        if model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found.")
+        transcription = self.transcribe_audio_stream(audio_stream)
         words = transcription.split()
 
         complexities = {}

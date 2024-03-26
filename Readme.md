@@ -36,6 +36,19 @@ The complexity of a word is estimated using five features:
 
 ## Methodology
 
+
+## System Overview
+
+```plaintext
+[ Data Collection ] -> [ Feature Engineering ] -> [ Model Training ]
+       |                                                  |
+       v                                                  v
+[ Audio Processing & Transcription ]             [ Complexity Prediction ]
+       |                                                  |
+       v                                                  v
+[ Word Complexity Estimation ] -> [ Readability Assessment ] -> [ Educational Integration ]
+```
+
 ### Data Collection
 
 Collect data on word complexity using the following resources:
