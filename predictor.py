@@ -15,6 +15,8 @@ import re
 import textstat
 import base64
 import os
+import nltk
+from nltk.metrics import distance
 
 # Constants for file paths and settings
 MODEL_FILENAME_TEMPLATE = "model_{}.pickle"
@@ -135,6 +137,18 @@ class WordComplexityPredictor:
         self._log(f"Transcribed audio to text: {result['text']}")
         self.transcription = result["text"]
         return result["text"]
+
+    def calculate_levenshtein_distance(self, original_text, transcribed_text):
+        return distance.edit_distance(original_text, transcribed_text)
+
+    def keyword_analysis(self, original_text, transcribed_text):
+        original_keywords = set(
+            nltk.word_tokenize(original_text.lower())
+        )  # Tokenize and convert to lowercase
+        transcribed_keywords = set(nltk.word_tokenize(transcribed_text.lower()))
+        missed_keywords = original_keywords.difference(transcribed_keywords)
+        new_keywords = transcribed_keywords.difference(original_keywords)
+        return list(missed_keywords), list(new_keywords)
 
     # New Method: Process Audio File and Predict Word Complexities
     def process_audio_and_predict(self, mp3_file_path, model_name="decision_tree"):

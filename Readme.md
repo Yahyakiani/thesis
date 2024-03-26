@@ -81,7 +81,7 @@ Collect data on word complexity using the following resources:
 - V Kuperman et al. 2012. Age-of-acquisition ratings for 30,000 English words. Behavior Research Methods.
 - M Brysbaert et al. 2013. Concreteness ratings for 40 thousand generally known English word lemmas. Behavior Research Methods.
 
-
+d
 
 
 
